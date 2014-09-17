@@ -2,7 +2,8 @@ var chalk = require('chalk'),
   util = require('util'),
   diff = require('diff'),
   stacktrace = require('stack-trace'),
-  fs = require('fs');
+  fs = require('fs'),
+  clear = require('clear');
 
 var symbols = {
   ok: '✓',
@@ -19,22 +20,22 @@ if('win32' == process.platform) {
 
 var options = {
   colors: {
-    'suite title': 'bold.underline',
-    'pending': 'yellow',
-    'pass': 'green',
-    'fail': 'red.bold',
-    'checkmark': 'magenta',
+    'suite title': 'bold',
+    'pending': 'white',
+    'pass': 'grey',
+    'fail': 'red',
+    'checkmark': 'green',
     'slow': 'red',
     'medium': 'yellow',
     'stat': 'blue',
-    'error title': 'underline',
-    'error stack': 'reset',
-    'error message': 'cyan',
+    'error title': 'red',
+    'error stack': 'yellow',
+    'error message': 'yellow',
     'diff added': 'green',
     'diff removed': 'red',
     'pos': 'yellow'
   },
-  indentation: 4,
+  indentation: 1,
   stream: process.stdout
 };
 
@@ -63,6 +64,7 @@ function Reporter(runner, mocha) {
     stats = this.stats = { suites: 0, tests: 0, passes: 0, pending: 0, failures: 0 },
     failures = this.failures = [];
 
+  var ended = false;
   this.indentationLevel = 0;
 
   if(!runner) return;
@@ -75,9 +77,19 @@ function Reporter(runner, mocha) {
 
   runner.on('start', function() {
     stats.start = new Date;
+    clear()
   });
 
   runner.on('suite', function(suite) {
+    if (ended) return;
+    //console.log("this", this)
+    if (stats.pending) {
+      //this.emit('end');
+      //ended = true;
+
+      //process.exit()
+    }
+    if (that.indentationLevel < 2) clear()
     stats.suites = stats.suites || 0;
     suite.root || stats.suites++;
 
@@ -86,14 +98,17 @@ function Reporter(runner, mocha) {
   });
 
   runner.on('suite end', function(suite) {
+    if (ended) return;
     that.indentationLevel--;
     if(1 == that.indentationLevel) that.writeLine();
   });
 
   runner.on('pending', function(test) {
+    if (ended) return;
     stats.pending++;
 
-    that.writeLine(color('pending', '- %s'), test.title);
+    that.writeLine(color('pending', '  - %s'), test.title);
+    //Process.exit()
   });
 
   runner.on('test end', function(test) {
@@ -102,6 +117,7 @@ function Reporter(runner, mocha) {
   });
 
   runner.on('pass', function(test) {
+    if (ended) return;
     stats.passes = stats.passes || 0;
 
     var medium = test.slow() / 2;
@@ -121,21 +137,49 @@ function Reporter(runner, mocha) {
   });
 
   runner.on('fail', function(test, err) {
+    if (ended) return;
     stats.failures = stats.failures || 0;
     stats.failures++;
     test.err = err;
     failures.push(test);
 
-    that.writeLine('  ' + color('fail', '%d) %s'), failures.length, test.title);
+    that.writeLine('  ' + color('fail', symbols.err + ' ' + test.title));
+    that.indentationLevel++;
+    if (test.title !== 'not finished yet') {
+      that.writeLine(color('error message', '%s'), err.toString().slice(0,100));
+      var found = false;
+      err.stack.split('\n').forEach(function(line, i) {
+        if (found || i === 0) return;
+        if (line.match(process.cwd()) && !line.match(process.cwd() + '/node_modules')) {
+          found = true;
+        }
+        that.writeLine(color('error stack', line));
+      });
+      if (!found) {
+        that.writeLine(color('error stack', err.stack.split('\n')[1]));
+        that.writeLine(color('error stack', err.stack.split('\n')[2]));
+      }
+
+      // actual / expected diff
+      if ('string' == typeof actual && 'string' == typeof expected) {
+        that.writeDiff(actual, expected, escape);
+      }
+    }
+
+    that.writeLine();
+    this.emit('end');
+    ended = true;
+    //process.exit()
   });
 
   runner.on('end', function() {
+    if (ended) return;
     stats.end = new Date;
     stats.duration = new Date - stats.start;
 
     that.writeLine();
-    that.writeStat(stats);
-    if(failures.length) that.writeFailures(failures);
+    //that.writeStat(stats);
+    //if(failures.length) that.writeFailures(failures);
   });
 }
 
@@ -168,7 +212,7 @@ function formatTime(ms) {
 }
 
 Reporter.prototype.write = function() {
-  var ident = new Array(options.indentation * this.indentationLevel).join(' ');
+  var ident = new Array(options.indentation * this.indentationLevel).join('  ');
   options.stream.write(ident + util.format.apply(util, arguments));
 };
 
@@ -235,35 +279,35 @@ Reporter.prototype.writeFailures = function(failures) {
 
     this.writeLine();
 
-    stack.filter(function(l) { return l.length > 0; }).forEach(function(line, i) {
-      this.writeLine(color('error stack', line));
+    // stack.filter(function(l) { return l.length > 0; }).forEach(function(line, i) {
+    //   this.writeLine(color('error stack', line));
 
-      var fileName = parsedStack[i].getFileName(),
-          lineNumber = parsedStack[i].getLineNumber(),
-        columnNumber = parsedStack[i].getColumnNumber();
+    //   var fileName = parsedStack[i].getFileName(),
+    //       lineNumber = parsedStack[i].getLineNumber(),
+    //     columnNumber = parsedStack[i].getColumnNumber();
 
-      if(lineNumber != null/* && this.files.indexOf(fileName) >= 0*/) {
-        if(!this.filesCache[fileName]) {
-          try {
-            this.filesCache[fileName] = fs.readFileSync(fileName, { encoding: 'utf8' }).split('\n');
-          } catch(e) {}
-        }
-        if(this.filesCache[fileName]) {
-          var lines = this.filesCache[fileName];
-          var exactLine = lines[lineNumber - 1];
-          this.writeLine();
-          this.writeLine(color('pos', '%d') + ' | %s', lineNumber, exactLine);
-          if(columnNumber != null) {
-            var prefixLength = ('' + lineNumber + ' | ').length;
-            var padding = new Array(prefixLength + exactLine.length);
-            padding[prefixLength + columnNumber - 1] = color('pos', '^');
-            this.writeLine(padding.join(' '));
-          } else {
-            this.writeLine();
-          }
-        }
-      }
-    }, this);
+    //   if(lineNumber != null/* && this.files.indexOf(fileName) >= 0*/) {
+    //     if(!this.filesCache[fileName]) {
+    //       try {
+    //         this.filesCache[fileName] = fs.readFileSync(fileName, { encoding: 'utf8' }).split('\n');
+    //       } catch(e) {}
+    //     }
+    //     if(this.filesCache[fileName]) {
+    //       var lines = this.filesCache[fileName];
+    //       var exactLine = lines[lineNumber - 1];
+    //       this.writeLine();
+    //       this.writeLine(color('pos', '%d') + ' | %s', lineNumber, exactLine);
+    //       if(columnNumber != null) {
+    //         var prefixLength = ('' + lineNumber + ' | ').length;
+    //         var padding = new Array(prefixLength + exactLine.length);
+    //         padding[prefixLength + columnNumber - 1] = color('pos', '^');
+    //         this.writeLine(padding.join(' '));
+    //       } else {
+    //         this.writeLine();
+    //       }
+    //     }
+    //   }
+    // }, this);
 
     this.indentationLevel--;
 
